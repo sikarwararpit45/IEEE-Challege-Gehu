@@ -1,20 +1,20 @@
 import pandas as pd
 import numpy as np
+import gc
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import accuracy_score
 
-from lightgbm import LGBMClassifier
+from lightgbm import LGBMClassifier, early_stopping, log_evaluation
 from xgboost import XGBClassifier
 from catboost import CatBoostClassifier
-from lightgbm import early_stopping, log_evaluation
 
 
 # -----------------------------
 # Load Data
 # -----------------------------
-train = pd.read_csv("C:\\Users\Arpit\Downloads\\alrIEEEna_26_dataset\\ML Challenge Dataset\\TRAIN.csv")
-test = pd.read_csv("C:\\Users\Arpit\Downloads\\alrIEEEna_26_dataset\\ML Challenge Dataset\\TEST.csv")
+train = pd.read_csv(r"C:\Users\Arpit\Downloads\alrIEEEna_26_dataset\ML Challenge Dataset\TRAIN.csv")
+test = pd.read_csv(r"C:\Users\Arpit\Downloads\alrIEEEna_26_dataset\ML Challenge Dataset\TEST.csv")
 
 X = train.drop("Class", axis=1)
 y = train["Class"]
@@ -63,7 +63,7 @@ X_test["F20_F21"] = X_test["F20"] * X_test["F21"]
 
 
 # -----------------------------
-# Kaggle Trick: Auto Feature Interactions
+# Automatic Interaction Features
 # -----------------------------
 print("Generating automatic interaction features...")
 
@@ -129,7 +129,6 @@ for fold, (tr, va) in enumerate(skf.split(X, y)):
         reg_alpha=1,
         reg_lambda=3,
         device="gpu",
-        gpu_platform_id=0,
         gpu_device_id=0,
         verbose=-1
     )
@@ -152,6 +151,9 @@ for fold, (tr, va) in enumerate(skf.split(X, y)):
     # -----------------------------
     # XGBoost (GPU)
     # -----------------------------
+    # -----------------------------
+    # XGBoost (GPU)
+    # -----------------------------
     xgb = XGBClassifier(
         n_estimators=1200,
         learning_rate=0.02,
@@ -164,7 +166,12 @@ for fold, (tr, va) in enumerate(skf.split(X, y)):
         max_bin=256
     )
 
-    xgb.fit(X_train, y_train)
+    xgb.fit(
+        X_train,
+        y_train,
+        eval_set=[(X_val, y_val)],
+        verbose=False
+    )
 
     oof_xgb[va] = xgb.predict_proba(X_val)[:,1]
     pred_xgb += xgb.predict_proba(X_test)[:,1] / 5
@@ -179,17 +186,24 @@ for fold, (tr, va) in enumerate(skf.split(X, y)):
         depth=6,
         task_type="GPU",
         devices="0",
+        eval_metric="Logloss",
         verbose=0
     )
 
-    cat.fit(X_train, y_train)
+    cat.fit(
+        X_train,
+        y_train,
+        eval_set=(X_val, y_val),
+        early_stopping_rounds=200,
+        verbose=False
+    )
 
     oof_cat[va] = cat.predict_proba(X_val)[:,1]
     pred_cat += cat.predict_proba(X_test)[:,1] / 5
 
 
     # -----------------------------
-    # Ensemble Validation Score
+    # Ensemble Validation
     # -----------------------------
     val_pred = (
         0.45 * oof_lgb[va] +
@@ -205,11 +219,17 @@ for fold, (tr, va) in enumerate(skf.split(X, y)):
 
     fold_scores.append(acc)
 
+    gc.collect()
+
 
 # -----------------------------
 # OOF Evaluation
 # -----------------------------
-oof = 0.45 * oof_lgb + 0.35 * oof_xgb + 0.20 * oof_cat
+oof = (
+    0.45 * oof_lgb +
+    0.35 * oof_xgb +
+    0.20 * oof_cat
+)
 
 oof_pred = (oof > 0.5).astype(int)
 
@@ -234,7 +254,7 @@ pred = (
 
 submission = pd.DataFrame({
     "ID": test["ID"],
-    "Class": (pred > 0.5).astype(int)
+    "CLASS": (pred > 0.5).astype(int)
 })
 
 submission.to_csv("FINAL.csv", index=False)
